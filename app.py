@@ -10,10 +10,9 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template_string, request
 
+from soulseek_config import OUTPUT_PATH, SOULSEEK_PASSWORD, SOULSEEK_USERNAME
 
-SOULSEEK_USERNAME = "your_username"
-SOULSEEK_PASSWORD = "your_password"
-OUTPUT_PATH = str(Path.cwd() / "downloads")
+
 HOST = "0.0.0.0"
 PORT = 5123
 
