@@ -466,6 +466,28 @@ def append_output(chunk):
     broadcast_state()
 
 
+def begin_search(query):
+    query = (query or "").strip()
+    if not query:
+        return {"error": "Search query is required.", **snapshot_state()}, 400
+
+    with state_lock:
+        if app_state["running"]:
+            log_debug("search request rejected because another search is still running")
+            return {"error": "A search is already running.", **snapshot_state()}, 409
+        app_state["running"] = True
+        app_state["last_search"] = query
+        app_state["output"] = [
+            f"$ sldl {query} --user {SOULSEEK_USERNAME} --pass ******** -p {OUTPUT_PATH}\n\n"
+        ]
+
+    log_debug(f"accepted search request for {query!r}")
+    broadcast_state()
+    worker = threading.Thread(target=run_sldl_search, args=(query,), daemon=True)
+    worker.start()
+    return snapshot_state(), 200
+
+
 def run_sldl_search(query):
     resolved_sldl = shutil.which(SLDL_PATH) if SLDL_PATH == "sldl" else SLDL_PATH
     command = [
@@ -530,6 +552,11 @@ def run_sldl_search(query):
 
 @app.get("/")
 def index():
+    query = (request.args.get("query") or "").strip()
+    if query and not snapshot_state()["running"]:
+        _, status_code = begin_search(query)
+        log_debug(f"index fallback triggered with query parameter; status={status_code}")
+
     response = Response(render_template_string(HTML, output_path=html.escape(OUTPUT_PATH)))
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return response
@@ -568,25 +595,9 @@ def events():
 @app.post("/search")
 @app.post("/query")
 def start_search():
-    data = request.get_json(silent=True) or {}
-    query = (data.get("query") or "").strip()
-
-    if not query:
-        return jsonify({"error": "Search query is required.", **snapshot_state()}), 400
-
-    with state_lock:
-        if app_state["running"]:
-            log_debug("search request rejected because another search is still running")
-            return jsonify({"error": "A search is already running.", **snapshot_state()}), 409
-        app_state["running"] = True
-        app_state["last_search"] = query
-        app_state["output"] = [f"$ sldl {query} --user {SOULSEEK_USERNAME} --pass ******** -p {OUTPUT_PATH}\n\n"]
-
-    log_debug(f"accepted search request for {query!r}")
-    broadcast_state()
-    worker = threading.Thread(target=run_sldl_search, args=(query,), daemon=True)
-    worker.start()
-    return jsonify(snapshot_state())
+    data = request.get_json(silent=True) or request.form or {}
+    payload, status_code = begin_search(data.get("query"))
+    return jsonify(payload), status_code
 
 
 if __name__ == "__main__":
