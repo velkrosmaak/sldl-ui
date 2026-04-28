@@ -1,8 +1,10 @@
 import html
 import json
+import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -25,6 +27,10 @@ app_state = {
     "running": False,
     "listeners": set(),
 }
+
+
+def log_debug(message):
+    print(f"[sldl-ui] {message}", file=sys.stderr, flush=True)
 
 
 HTML = """
@@ -359,11 +365,16 @@ HTML = """
     const statusText = document.getElementById("status-text");
 
     function renderState(data) {
-      const lines = Array.isArray(data.output) ? data.output : [];
-      output.textContent = lines.length ? lines.join("") : "Waiting for a search.";
-      output.classList.toggle("empty", lines.length === 0);
+      const chunks = Array.isArray(data.output) ? data.output : [];
+      const text = chunks.join("");
+      const visibleLineCount = text.length
+        ? text.split("\n").filter((line, index, arr) => line.length > 0 || index < arr.length - 1).length
+        : 0;
+
+      output.textContent = text || "Waiting for a search.";
+      output.classList.toggle("empty", text.length === 0);
       lastSearch.textContent = data.last_search || "No search run yet.";
-      lineCount.textContent = `${lines.length} line${lines.length === 1 ? "" : "s"}`;
+      lineCount.textContent = `${visibleLineCount} line${visibleLineCount === 1 ? "" : "s"}`;
       statusDot.classList.toggle("running", Boolean(data.running));
       statusText.textContent = data.running ? "Running" : "Idle";
       output.scrollTop = output.scrollHeight;
@@ -439,10 +450,10 @@ def broadcast_state():
         listener.put(payload)
 
 
-def append_output(line):
-    safe_line = line.replace("\r\n", "\n").replace("\r", "\n")
+def append_output(chunk):
+    safe_chunk = chunk.replace("\r\n", "\n").replace("\r", "\n")
     with state_lock:
-        app_state["output"].append(safe_line)
+        app_state["output"].append(safe_chunk)
     broadcast_state()
 
 
@@ -458,7 +469,11 @@ def run_sldl_search(query):
         OUTPUT_PATH,
     ]
 
+    log_debug(f"starting search for {query!r}")
+    log_debug("command: " + " ".join(["sldl", repr(query), "--user", SOULSEEK_USERNAME, "--pass", "********", "-p", OUTPUT_PATH]))
+
     if not shutil.which("sldl"):
+        log_debug("sldl was not found in PATH")
         append_output("Error: `sldl` was not found in PATH. Install it before starting a search.\n")
         with state_lock:
             app_state["running"] = False
@@ -470,10 +485,10 @@ def run_sldl_search(query):
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
     except Exception as exc:
+        log_debug(f"failed to start sldl: {exc}")
         append_output(f"Failed to start sldl: {exc}\n")
         with state_lock:
             app_state["running"] = False
@@ -481,10 +496,20 @@ def run_sldl_search(query):
         return
 
     assert process.stdout is not None
-    for line in process.stdout:
-        append_output(line)
+    log_debug(f"spawned sldl with pid {process.pid}")
+
+    while True:
+        chunk = os.read(process.stdout.fileno(), 1024)
+        if not chunk:
+            break
+
+        text = chunk.decode("utf-8", errors="replace")
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        append_output(text)
 
     return_code = process.wait()
+    log_debug(f"sldl exited with code {return_code}")
     append_output(f"\nProcess finished with exit code {return_code}.\n")
 
     with state_lock:
@@ -507,6 +532,7 @@ def events():
     listener = queue.Queue()
     with state_lock:
         app_state["listeners"].add(listener)
+    log_debug("browser event stream connected")
 
     def event_stream():
         try:
@@ -515,6 +541,7 @@ def events():
                 payload = listener.get()
                 yield f"data: {payload}\n\n"
         finally:
+            log_debug("browser event stream disconnected")
             with state_lock:
                 app_state["listeners"].discard(listener)
 
@@ -535,11 +562,13 @@ def start_search():
 
     with state_lock:
         if app_state["running"]:
+            log_debug("search request rejected because another search is still running")
             return jsonify({"error": "A search is already running.", **snapshot_state()}), 409
         app_state["running"] = True
         app_state["last_search"] = query
         app_state["output"] = [f"$ sldl {query} --user {SOULSEEK_USERNAME} --pass ******** -p {OUTPUT_PATH}\n\n"]
 
+    log_debug(f"accepted search request for {query!r}")
     broadcast_state()
     worker = threading.Thread(target=run_sldl_search, args=(query,), daemon=True)
     worker.start()
