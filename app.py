@@ -38,6 +38,7 @@ HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% if auto_refresh %}<meta http-equiv="refresh" content="2">{% endif %}
   <title>PulseDL</title>
   <style>
     :root {
@@ -317,16 +318,16 @@ HTML = """
     </section>
 
     <section class="search-panel">
-      <form id="search-form" class="controls">
-        <input id="search-input" class="search-input" name="query" type="text" placeholder="Artist, album, track, or mix" autocomplete="off" required>
+      <form id="search-form" class="controls" method="get" action="/">
+        <input id="search-input" class="search-input" name="query" type="text" placeholder="Artist, album, track, or mix" autocomplete="off" required value="{{ current_query }}">
         <button id="search-button" class="btn btn-primary" type="submit">Search</button>
         <button id="clear-button" class="btn btn-secondary" type="button">Clear</button>
       </form>
 
       <div class="status-row">
         <div class="status-badge">
-          <span id="status-dot" class="status-dot"></span>
-          <span id="status-text">Idle</span>
+          <span id="status-dot" class="status-dot {% if initial_running %}running{% endif %}"></span>
+          <span id="status-text">{{ status_text }}</span>
         </div>
         <div id="hint-text">The output panel follows live command output automatically.</div>
       </div>
@@ -334,7 +335,7 @@ HTML = """
       <div class="meta-grid">
         <div class="meta-card">
           <div class="meta-label">Last Search</div>
-          <div id="last-search" class="meta-value">No search run yet.</div>
+          <div id="last-search" class="meta-value">{{ last_search_text }}</div>
         </div>
         <div class="meta-card">
           <div class="meta-label">Download Path</div>
@@ -345,96 +346,170 @@ HTML = """
       <section class="output-panel">
         <div class="output-head">
           <span>Live `sldl` output</span>
-          <span id="line-count">0 lines</span>
+          <span id="line-count">{{ line_count_label }}</span>
         </div>
-        <pre id="output" class="empty">Waiting for a search.</pre>
+        <pre id="output" class="{% if output_empty %}empty{% endif %}">{{ initial_output }}</pre>
       </section>
     </section>
   </main>
 
   <script>
-    const form = document.getElementById("search-form");
-    const input = document.getElementById("search-input");
-    const searchButton = document.getElementById("search-button");
-    const clearButton = document.getElementById("clear-button");
-    const lastSearch = document.getElementById("last-search");
-    const output = document.getElementById("output");
-    const lineCount = document.getElementById("line-count");
-    const statusDot = document.getElementById("status-dot");
-    const statusText = document.getElementById("status-text");
+    (function () {
+      var form = document.getElementById("search-form");
+      var input = document.getElementById("search-input");
+      var searchButton = document.getElementById("search-button");
+      var clearButton = document.getElementById("clear-button");
+      var lastSearch = document.getElementById("last-search");
+      var output = document.getElementById("output");
+      var lineCount = document.getElementById("line-count");
+      var statusDot = document.getElementById("status-dot");
+      var statusText = document.getElementById("status-text");
+      var pollTimer = null;
 
-    function renderState(data) {
-      const chunks = Array.isArray(data.output) ? data.output : [];
-      const text = chunks.join("");
-      const visibleLineCount = text.length
-        ? text.split("\n").filter((line, index, arr) => line.length > 0 || index < arr.length - 1).length
-        : 0;
-
-      output.textContent = text || "Waiting for a search.";
-      output.classList.toggle("empty", text.length === 0);
-      lastSearch.textContent = data.last_search || "No search run yet.";
-      lineCount.textContent = `${visibleLineCount} line${visibleLineCount === 1 ? "" : "s"}`;
-      statusDot.classList.toggle("running", Boolean(data.running));
-      statusText.textContent = data.running ? "Running" : "Idle";
-      output.scrollTop = output.scrollHeight;
-      searchButton.disabled = Boolean(data.running);
-    }
-
-    async function refreshState() {
-      const response = await fetch("/state");
-      const data = await response.json();
-      renderState(data);
-    }
-
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const query = input.value.trim();
-      if (!query) {
-        input.focus();
-        return;
-      }
-
-      searchButton.disabled = true;
-      statusText.textContent = "Starting";
-
-      try {
-        const response = await fetch("/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({ query })
-        });
-
-        const data = await response.json();
-        renderState(data);
-
-        if (!response.ok) {
-          alert(data.error || "Unable to start search.");
+      function countVisibleLines(text) {
+        if (!text) {
+          return 0;
         }
-      } catch (error) {
-        console.error("Search request failed", error);
-        statusText.textContent = "Request failed";
-        searchButton.disabled = false;
-        alert("Could not contact the backend. Check the server console for details.");
+
+        var lines = text.split("\n");
+        var count = 0;
+        for (var i = 0; i < lines.length; i += 1) {
+          if (lines[i].length > 0 || i < lines.length - 1) {
+            count += 1;
+          }
+        }
+        return count;
       }
-    });
 
-    clearButton.addEventListener("click", () => {
-      input.value = "";
-      input.focus();
-    });
+      function renderState(data) {
+        if (!data) {
+          return;
+        }
 
-    const events = new EventSource("/events");
-    events.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      renderState(data);
-    };
+        var chunks = Object.prototype.toString.call(data.output) === "[object Array]" ? data.output : [];
+        var text = chunks.join("");
+        var visibleLineCount = countVisibleLines(text);
 
-    events.onerror = () => {
-      statusText.textContent = "Reconnecting";
-    };
+        output.textContent = text || "Waiting for a search.";
+        if (text.length === 0) {
+          output.className = "empty";
+        } else {
+          output.className = "";
+        }
 
-    refreshState();
+        lastSearch.textContent = data.last_search || "No search run yet.";
+        lineCount.textContent = visibleLineCount + " line" + (visibleLineCount === 1 ? "" : "s");
+
+        if (data.running) {
+          statusDot.classList.add("running");
+          statusText.textContent = "Running";
+          startPolling();
+        } else {
+          statusDot.classList.remove("running");
+          statusText.textContent = "Idle";
+          stopPolling();
+        }
+
+        output.scrollTop = output.scrollHeight;
+        searchButton.disabled = Boolean(data.running);
+      }
+
+      function requestState(callback) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/state", true);
+        xhr.setRequestHeader("Cache-Control", "no-store");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) {
+            return;
+          }
+
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              callback(JSON.parse(xhr.responseText));
+            } catch (error) {
+              console.error("State parse failed", error);
+            }
+          }
+        };
+        xhr.send();
+      }
+
+      function startPolling() {
+        if (pollTimer) {
+          return;
+        }
+        pollTimer = window.setInterval(function () {
+          requestState(renderState);
+        }, 1000);
+      }
+
+      function stopPolling() {
+        if (!pollTimer) {
+          return;
+        }
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+
+      function handleSubmit(event) {
+        if (event && event.preventDefault) {
+          event.preventDefault();
+        }
+
+        var query = input.value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        if (!query) {
+          input.focus();
+          return false;
+        }
+
+        searchButton.disabled = true;
+        statusText.textContent = "Starting";
+
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/search", true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.setRequestHeader("Cache-Control", "no-store");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) {
+            return;
+          }
+
+          try {
+            renderState(JSON.parse(xhr.responseText));
+          } catch (error) {
+            console.error("Search response parse failed", error);
+          }
+
+          if (!(xhr.status >= 200 && xhr.status < 300)) {
+            searchButton.disabled = false;
+            statusText.textContent = "Request failed";
+          }
+        };
+        xhr.onerror = function () {
+          console.error("Search request failed");
+          searchButton.disabled = false;
+          statusText.textContent = "Request failed";
+        };
+        xhr.send(JSON.stringify({ query: query }));
+        return false;
+      }
+
+      if (form.addEventListener) {
+        form.addEventListener("submit", handleSubmit);
+      } else if (form.attachEvent) {
+        form.attachEvent("onsubmit", handleSubmit);
+      }
+
+      clearButton.onclick = function () {
+        input.value = "";
+        input.focus();
+      };
+
+      requestState(renderState);
+      if ({{ 'true' if initial_running else 'false' }}) {
+        startPolling();
+      }
+    })();
   </script>
 </body>
 </html>
@@ -557,7 +632,24 @@ def index():
         _, status_code = begin_search(query)
         log_debug(f"index fallback triggered with query parameter; status={status_code}")
 
-    response = Response(render_template_string(HTML, output_path=html.escape(OUTPUT_PATH)))
+    state = snapshot_state()
+    output_text = "".join(state["output"])
+    line_count = len(output_text.splitlines()) if output_text else 0
+    line_count_label = f"{line_count} line" if line_count == 1 else f"{line_count} lines"
+    response = Response(
+        render_template_string(
+            HTML,
+            output_path=html.escape(OUTPUT_PATH),
+            current_query=html.escape(query),
+            last_search_text=state["last_search"] or "No search run yet.",
+            initial_output=output_text or "Waiting for a search.",
+            output_empty=not output_text,
+            initial_running=state["running"],
+            status_text="Running" if state["running"] else "Idle",
+            line_count_label=line_count_label,
+            auto_refresh=state["running"],
+        )
+    )
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return response
 
