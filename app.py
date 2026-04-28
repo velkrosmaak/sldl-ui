@@ -10,7 +10,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template_string, request
 
-from soulseek_config import OUTPUT_PATH, SOULSEEK_PASSWORD, SOULSEEK_USERNAME
+from soulseek_config import OUTPUT_PATH, SLDL_PATH, SOULSEEK_PASSWORD, SOULSEEK_USERNAME
 
 
 HOST = "0.0.0.0"
@@ -457,8 +457,9 @@ def append_output(chunk):
 
 
 def run_sldl_search(query):
+    resolved_sldl = shutil.which(SLDL_PATH) if SLDL_PATH == "sldl" else SLDL_PATH
     command = [
-        "sldl",
+        resolved_sldl or SLDL_PATH,
         query,
         "--user",
         SOULSEEK_USERNAME,
@@ -469,11 +470,12 @@ def run_sldl_search(query):
     ]
 
     log_debug(f"starting search for {query!r}")
-    log_debug("command: " + " ".join(["sldl", repr(query), "--user", SOULSEEK_USERNAME, "--pass", "********", "-p", OUTPUT_PATH]))
+    log_debug(f"configured sldl path: {SLDL_PATH}")
+    log_debug("command: " + " ".join([resolved_sldl or SLDL_PATH, repr(query), "--user", SOULSEEK_USERNAME, "--pass", "********", "-p", OUTPUT_PATH]))
 
-    if not shutil.which("sldl"):
+    if not resolved_sldl and SLDL_PATH == "sldl":
         log_debug("sldl was not found in PATH")
-        append_output("Error: `sldl` was not found in PATH. Install it before starting a search.\n")
+        append_output("Error: `sldl` was not found in PATH. Install it before starting a search or set SLDL_PATH in soulseek_config.py.\n")
         with state_lock:
             app_state["running"] = False
         broadcast_state()
@@ -488,7 +490,7 @@ def run_sldl_search(query):
         )
     except Exception as exc:
         log_debug(f"failed to start sldl: {exc}")
-        append_output(f"Failed to start sldl: {exc}\n")
+        append_output(f"Failed to start sldl ({resolved_sldl or SLDL_PATH}): {exc}\n")
         with state_lock:
             app_state["running"] = False
         broadcast_state()
