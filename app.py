@@ -12,8 +12,8 @@ from flask import Flask, Response, jsonify, render_template_string, request
 SOULSEEK_USERNAME = "your_username"
 SOULSEEK_PASSWORD = "your_password"
 OUTPUT_PATH = str(Path.cwd() / "downloads")
-HOST = "127.0.0.1"
-PORT = 5000
+HOST = "0.0.0.0"
+PORT = 5123
 
 
 app = Flask(__name__)
