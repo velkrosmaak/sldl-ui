@@ -395,17 +395,27 @@ HTML = """
       }
 
       searchButton.disabled = true;
-      const response = await fetch("/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query })
-      });
+      statusText.textContent = "Starting";
 
-      const data = await response.json();
-      renderState(data);
+      try {
+        const response = await fetch("/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ query })
+        });
 
-      if (!response.ok) {
-        alert(data.error || "Unable to start search.");
+        const data = await response.json();
+        renderState(data);
+
+        if (!response.ok) {
+          alert(data.error || "Unable to start search.");
+        }
+      } catch (error) {
+        console.error("Search request failed", error);
+        statusText.textContent = "Request failed";
+        searchButton.disabled = false;
+        alert("Could not contact the backend. Check the server console for details.");
       }
     });
 
@@ -520,7 +530,9 @@ def run_sldl_search(query):
 
 @app.get("/")
 def index():
-    return render_template_string(HTML, output_path=html.escape(OUTPUT_PATH))
+    response = Response(render_template_string(HTML, output_path=html.escape(OUTPUT_PATH)))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @app.get("/state")
@@ -554,6 +566,7 @@ def events():
 
 
 @app.post("/search")
+@app.post("/query")
 def start_search():
     data = request.get_json(silent=True) or {}
     query = (data.get("query") or "").strip()
